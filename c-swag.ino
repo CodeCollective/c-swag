@@ -281,7 +281,14 @@ void loop() {
             if (IrReceiver.decodedIRData.command == 0x5 || IrReceiver.decodedIRData.command == 0x19 || IrReceiver.decodedIRData.command == 0x13) {
               colorArray[PROGRAM] = (colorArray[PROGRAM] + COLOR_COUNT - 1) % COLOR_COUNT;  // Convert back to RGB
               EEPROM.write(custom_color_addr, colorArray[PROGRAM]);                         // Save the new hue to EEPROM
-              Serial.println(String("Color decreased: ") + String(hue));
+              Serial.println(String("Color decreased: ") + String(colorArray[PROGRAM]));
+            }
+
+            // Reset color
+            if (IrReceiver.decodedIRData.command == 0x37 || IrReceiver.decodedIRData.command == 0x2A) {
+              colorArray[PROGRAM] = PROGRAM;  // Convert back to RGB
+              EEPROM.write(custom_color_addr, colorArray[PROGRAM]);                         // Save the new hue to EEPROM
+              Serial.println(String("Color decreased: ") + String(colorArray[PROGRAM]));
             }
           }
         }
@@ -301,6 +308,13 @@ void loop() {
             cycles_per_second = min(cycles_per_second + 0.01, 1.5);
             writeFloat(speedAddr, cycles_per_second);
             Serial.println(String("Speed increased: ") + String(cycles_per_second));
+          }
+
+          // FIRE!
+          if (IrReceiver.decodedIRData.command == 0x37 || IrReceiver.decodedIRData.command == 0x2A) {
+            PROGRAM = PROGRAM_COUNT-1;
+            EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
+            Serial.println(String("Program: ") + String(PROGRAM));
           }
         }
 
@@ -343,12 +357,6 @@ void loop() {
           // Next
           if (IrReceiver.decodedIRData.command == 0x0A || IrReceiver.decodedIRData.command == 0x2D || IrReceiver.decodedIRData.command == 0x34) {
             PROGRAM = (PROGRAM + 1) % PROGRAM_COUNT;
-            EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
-            Serial.println(String("Program: ") + String(PROGRAM));
-          }
-          // FIRE!
-          if (IrReceiver.decodedIRData.command == 0x37 || IrReceiver.decodedIRData.command == 0x2A) {
-            PROGRAM = PROGRAM_COUNT-1;
             EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
             Serial.println(String("Program: ") + String(PROGRAM));
           }
