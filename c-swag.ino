@@ -346,6 +346,12 @@ void loop() {
             EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
             Serial.println(String("Program: ") + String(PROGRAM));
           }
+          // FIRE!
+          if (IrReceiver.decodedIRData.command == 0x37 || IrReceiver.decodedIRData.command == 0x2A) {
+            PROGRAM = PROGRAM_COUNT-1;
+            EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
+            Serial.println(String("Program: ") + String(PROGRAM));
+          }
         }
       }
     }
