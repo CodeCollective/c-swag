@@ -101,7 +101,6 @@
 #define DEBUG_BUTTON_PIN 2
 #endif
 
-void generateTone();
 void handleOverflow();
 bool detectLongPress(uint16_t aLongPressDurationMillis);
 
@@ -114,29 +113,57 @@ bool detectLongPress(uint16_t aLongPressDurationMillis);
 #define FASTLED_ALLOW_INTERRUPTS 1
 #include <FastLED.h>
 
-#define DATA_PIN 3
 #define NUM_LEDS 24
 #define LED_COUNT NUM_LEDS
 float MAX_POWER_MILLIAMPS = 2000;
 #define LED_TYPE WS2812B
 #define COLOR_ORDER GRB
 
-long currtime;
+long currtime_last;
 float cycles_per_second = 0.15;
 float currtime_unity;
-float i_unity[LED_COUNT];
-uint32_t colorArray[3];
 // Declare FastLED LED array
 CRGB leds[LED_COUNT];
-uint8_t PROGRAM_COUNT = 8;
+uint8_t PROGRAM_COUNT = 9;
 float USER_BRIGHTNESS = 1;
 uint8_t PROGRAM;
+uint8_t POWER_STATE = 1;
+#define PRIMARY_COLOR_COUNT 4
+uint8_t colorArray[PRIMARY_COLOR_COUNT];
 
-float h;
+float hue;
 float s;
 float v;
 
 #include <EEPROM.h>
+
+#define EEPROM_SELECTED_PROGRAM_ADDR 0
+#define EEPROM_GLOBAL_BRIGHTNESS_ADDR 4
+#define EEPROM_CUSTOM_COLOR_BASE_ADDR 8
+#define EEPROM_SPEED_BASE_ADDR (EEPROM_CUSTOM_COLOR_BASE_ADDR + PRIMARY_COLOR_COUNT * 4)
+
+#define COLOR_COUNT 15
+uint32_t getColorByIndex(int index) {
+  switch (index) {
+    case 0: return 0xFFFFFF;   // White
+    case 1: return 0x000000;   // Black
+    case 2: return 0xFF0000;   // Red
+    case 3: return 0x00FF00;   // Green
+    case 4: return 0x0000FF;   // Blue
+    case 5: return 0xFFFF00;   // Yellow
+    case 6: return 0x00FFFF;   // Cyan
+    case 7: return 0xFF00FF;   // Magenta
+    case 8: return 0xFFA500;   // Orange
+    case 9: return 0x800080;   // Purple
+    case 10: return 0x008000;  // Dark Green
+    case 11: return 0x808080;  // Gray
+    case 12: return 0xA52A2A;  // Brown
+    case 13: return 0xFFD700;  // Gold
+    case 14: return 0xADD8E6;  // Light Blue
+    default: return 0x000000;  // Default to Black if out of range
+  }
+}
+
 
 // To write a float to EEPROM
 void writeFloat(int address, float value) {
@@ -158,8 +185,13 @@ float readFloat(int address) {
 
 
 void setup() {
-  USER_BRIGHTNESS = max(min(readFloat(4), 1), 0);
-  PROGRAM = EEPROM.read(0) % PROGRAM_COUNT;
+  USER_BRIGHTNESS = max(min(readFloat(EEPROM_GLOBAL_BRIGHTNESS_ADDR), 1), 0);
+  FastLED.setBrightness(USER_BRIGHTNESS * USER_BRIGHTNESS * USER_BRIGHTNESS * 255);
+
+  PROGRAM = EEPROM.read(EEPROM_SELECTED_PROGRAM_ADDR) % PROGRAM_COUNT;
+
+  uint8_t speedAddr = EEPROM_SPEED_BASE_ADDR + PROGRAM * 4;
+  cycles_per_second = max(min(readFloat(speedAddr), 1), 0.002);
 
   // Power up the IR Receiver
   pinMode(4, OUTPUT);
@@ -198,14 +230,12 @@ void setup() {
   FastLED.clear();
   FastLED.show();
 
-  for (int i = 0; i < LED_COUNT; i++)
-    i_unity[i] = float(i) / LED_COUNT;
+  for (int custom_color = 0; custom_color < PRIMARY_COLOR_COUNT; custom_color++) {
+    colorArray[custom_color] = min(EEPROM.read(EEPROM_CUSTOM_COLOR_BASE_ADDR + custom_color*4), COLOR_COUNT);
+  }
 
-  colorArray[0] = readFloat(8);
-  colorArray[1] = readFloat(12);
-  colorArray[2] = readFloat(16);
+  currtime_last = millis();
 }
-
 
 void loop() {
   /*
@@ -233,78 +263,89 @@ void loop() {
 
       // If we recognize the protocol (Not Noise)
       if (IrReceiver.decodedIRData.protocol != UNKNOWN) {
+        IrReceiver.printIRResultShort(&Serial);
+
+        // CHANGE HUE on the First PRIMARY_COLOR_COUNT Colors
+        if (PROGRAM < PRIMARY_COLOR_COUNT) {
+          uint8_t custom_color_addr = EEPROM_CUSTOM_COLOR_BASE_ADDR + PROGRAM * 4;  // Calculate EEPROM address for the current program's hue
+
+          if (!(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
+            // Action Down: Intcrease color
+            if (IrReceiver.decodedIRData.command == 0x04 || IrReceiver.decodedIRData.command == 0x33 || IrReceiver.decodedIRData.command == 0x10) {
+              colorArray[PROGRAM] = (colorArray[PROGRAM] + 1) % COLOR_COUNT;  // Convert back to RGB
+              EEPROM.write(custom_color_addr, colorArray[PROGRAM]);           // Save the new hue to EEPROM
+              Serial.println(String("Color increased: ") + String(hue));
+            }
+
+            // Action Up: Increase hue
+            if (IrReceiver.decodedIRData.command == 0x5 || IrReceiver.decodedIRData.command == 0x19 || IrReceiver.decodedIRData.command == 0x13) {
+              colorArray[PROGRAM] = (colorArray[PROGRAM] + COLOR_COUNT - 1) % COLOR_COUNT;  // Convert back to RGB
+              EEPROM.write(custom_color_addr, colorArray[PROGRAM]);                         // Save the new hue to EEPROM
+              Serial.println(String("Color decreased: ") + String(hue));
+            }
+          }
+        }
+        // If its not the Color selector mode, change other things
+        else {
+          uint8_t speedAddr = EEPROM_SPEED_BASE_ADDR + PROGRAM * 4;
+          // Channel Down: Decrease speed
+          if (IrReceiver.decodedIRData.command == 0x04 || IrReceiver.decodedIRData.command == 0x33 || IrReceiver.decodedIRData.command == 0xB3 || IrReceiver.decodedIRData.command == 0x13) {
+            Serial.println(String("Speed addr: ") + String(speedAddr));
+            cycles_per_second = max(cycles_per_second - 0.01, 0.002);
+            writeFloat(speedAddr, cycles_per_second);
+            Serial.println(String("Speed decreased: ") + String(cycles_per_second));
+          }
+
+          // Channel Up: Increase speed
+          if (IrReceiver.decodedIRData.command == 0x5 || IrReceiver.decodedIRData.command == 0x19 || IrReceiver.decodedIRData.command == 0x99 || IrReceiver.decodedIRData.command == 0x10 ) {
+            cycles_per_second = min(cycles_per_second + 0.01, 1.5);
+            writeFloat(speedAddr, cycles_per_second);
+            Serial.println(String("Speed increased: ") + String(cycles_per_second));
+          }
+        }
+
         // Volume Down
-        if (IrReceiver.decodedIRData.command == 0x40) {
-          USER_BRIGHTNESS = max(USER_BRIGHTNESS - 0.05, 0);
+        if (IrReceiver.decodedIRData.command == 0x40 || IrReceiver.decodedIRData.command == 0x11 || IrReceiver.decodedIRData.command == 0x90 || IrReceiver.decodedIRData.command == 0x21) {
+          USER_BRIGHTNESS = max(USER_BRIGHTNESS - 0.025, 0);
           FastLED.setBrightness(USER_BRIGHTNESS * USER_BRIGHTNESS * USER_BRIGHTNESS * 255);
-          EEPROM.write(1, USER_BRIGHTNESS);
+          writeFloat(EEPROM_GLOBAL_BRIGHTNESS_ADDR, USER_BRIGHTNESS);
           Serial.println(String("Brightness: ") + String(USER_BRIGHTNESS));
         }
+
         // Volume Up
-        if (IrReceiver.decodedIRData.command == 0x48) {
+        if (IrReceiver.decodedIRData.command == 0x48 || IrReceiver.decodedIRData.command == 0x0F || IrReceiver.decodedIRData.command == 0x8F || IrReceiver.decodedIRData.command == 0x20) {
           USER_BRIGHTNESS = min(USER_BRIGHTNESS + 0.025, 1);
           FastLED.setBrightness(USER_BRIGHTNESS * USER_BRIGHTNESS * USER_BRIGHTNESS * 255);
-          EEPROM.write(1, USER_BRIGHTNESS);
+          writeFloat(EEPROM_GLOBAL_BRIGHTNESS_ADDR, USER_BRIGHTNESS);
           Serial.println(String("Brightness: ") + String(USER_BRIGHTNESS));
         }
 
-        // CHANGE HUE
-        if (PROGRAM < 3) {
-          uint8_t writeAddr = PROGRAM * 4 + 8;  // Calculate EEPROM address for the current program's hue
-
-          // Convert the current RGB color to HSV
-          RGBtoHSV(colorArray[PROGRAM]);
-          // Force full saturation
-          s = 1.0;  // Always set saturation to full
-
-          // Channel Down: Decrease hue
-          if (IrReceiver.decodedIRData.command == 0x04) {
-            h -= 3;                           // Decrease hue by 10 degrees
-            if (h < 0) h += 360;               // Wrap around if hue goes below 0
-            colorArray[PROGRAM] = HSVtoRGB();  // Convert back to RGB
-            writeFloat(writeAddr, h);          // Save the new hue to EEPROM
-            Serial.println(String("Hue decreased: ") + String(h));
-          }
-
-          // Channel Up: Increase hue
-          if (IrReceiver.decodedIRData.command == 0x5) {
-            h += 3;                           // Increase hue by 10 degrees
-            if (h >= 360) h -= 360;            // Wrap around if hue exceeds 360
-            colorArray[PROGRAM] = HSVtoRGB();  // Convert back to RGB
-            writeFloat(writeAddr, colorArray[PROGRAM] );          // Save the new hue to EEPROM
-            Serial.println(String("Hue increased: ") + String(h));
-          }
-
-          // Volume Down
-          if (IrReceiver.decodedIRData.command == 0x40) {
-            v = max(v-0.05, 0);
-            colorArray[PROGRAM] = HSVtoRGB();  // Convert back to RGB
-            writeFloat(writeAddr, colorArray[PROGRAM] );          // Save the new hue to EEPROM
-            Serial.println(String("Hue increased: ") + String(h));
-          }
-
-          // Volume Up
-          if (IrReceiver.decodedIRData.command == 0x48) {
-            v = min(v+0.05, 1);
-            colorArray[PROGRAM] = HSVtoRGB();  // Convert back to RGB
-            writeFloat(writeAddr, colorArray[PROGRAM] );          // Save the new hue to EEPROM
-            Serial.println(String("Hue increased: ") + String(h));
-          }
-        }
-
-        IrReceiver.printIRResultShort(&Serial);
+        // Only do these commands when its not a repeat
         if (!(IrReceiver.decodedIRData.flags & IRDATA_FLAGS_IS_REPEAT)) {
+          // Power
+          if (IrReceiver.decodedIRData.command == 0x00 || IrReceiver.decodedIRData.command == 0x17 || IrReceiver.decodedIRData.command == 0x3D) {
+            if (POWER_STATE) {
+              POWER_STATE = 0;
+              for (int i = 0; i < LED_COUNT; i++) {
+                leds[i] = 0;  // Set color
+              }
+              FastLED.show();
+            } else {
+              POWER_STATE = 1;
+            }
+          }
           // Previous
-          if (IrReceiver.decodedIRData.command == 0x02) {
+          if (IrReceiver.decodedIRData.command == 0x02 || IrReceiver.decodedIRData.command == 0x1E || IrReceiver.decodedIRData.command == 0x35) {
             PROGRAM = (PROGRAM + PROGRAM_COUNT - 1) % PROGRAM_COUNT;
-            EEPROM.write(0, PROGRAM);
+            EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
+            Serial.println(String("Program: ") + String(PROGRAM));
           }
           // Next
-          if (IrReceiver.decodedIRData.command == 0x0A) {
+          if (IrReceiver.decodedIRData.command == 0x0A || IrReceiver.decodedIRData.command == 0x2D || IrReceiver.decodedIRData.command == 0x34) {
             PROGRAM = (PROGRAM + 1) % PROGRAM_COUNT;
-            EEPROM.write(0, PROGRAM);
+            EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
+            Serial.println(String("Program: ") + String(PROGRAM));
           }
-          Serial.println(PROGRAM);
         }
       }
     }
@@ -320,36 +361,36 @@ void loop() {
     }
   }  // if (IrReceiver.decode())
 
-  currtime = millis();
-  currtime_unity = fmod(currtime / 1000  * cycles_per_second,1);
+  long time_delta = millis() - currtime_last;
+  currtime_last = millis();
+  float time_delta_seconds = time_delta / 1000.0;
+  currtime_unity = fmod(currtime_unity + time_delta_seconds * cycles_per_second, 1);
+  if (PROGRAM < PRIMARY_COLOR_COUNT) {
+    solidColor(PROGRAM);
+  }
   switch (PROGRAM) {
-    case 0:
-      solidColor(0);
-      break;
-    case 1:
-      solidColor(1);
-      break;
-    case 2:
-      solidColor(2);
-      break;
-    case 3:
-      Fire2012();  // run simulation frame
-      break;
     case 4:
-      fill_rainbow(leds, LED_COUNT, currtime_unity * 255);
-      break;
-    case 5:
-      fill_rainbow_break(4);
-      break;
-    case 6:
       colorWipe(1);
       break;
-    case 7:
+    case 5:
       colorWipe(2);
+      break;
+    case 6:
+      fill_rainbow_break(4);
+      break;
+    case 7:
+      fill_rainbow(leds, LED_COUNT, currtime_unity * 255);
+      break;
+    case 8:
+      Fire2012();  // run simulation frame
+      break;
+    default:
       break;
   }
 
-  FastLED.show();  // Update entire LED strip at once
+  if (POWER_STATE) {
+    FastLED.show();  // Update entire LED strip at once
+  }
 }
 
 void handleOverflow() {
@@ -400,18 +441,20 @@ bool detectLongPress(uint16_t aLongPressDurationMillis) {
 }
 
 void colorWipe(int breakcount) {
-  float break_distance_unity = 1.0/breakcount;
+  float break_distance_unity = 1.0 / breakcount;
   for (int i = 0; i < LED_COUNT; i++) {
-    float adjusted_i = abs((break_distance_unity/2)-fmod(i_unity[i], break_distance_unity));
-    leds[i] = colorArray[int(fmod(adjusted_i*breakcount, 1)+currtime_unity*3) % 3];  // Set color
+    float i_unity = float(i) / LED_COUNT;
+    float adjusted_i = abs((break_distance_unity / 2) - fmod(i_unity, break_distance_unity));
+    leds[i] = getColorByIndex(colorArray[int(fmod(adjusted_i * breakcount, 1) + (1 - currtime_unity) * PRIMARY_COLOR_COUNT) % PRIMARY_COLOR_COUNT]);  // Set color
   }
 }
 
 void fill_rainbow_break(int breakcount) {
-  float break_distance_unity = 1.0/breakcount;
+  float break_distance_unity = 1.0 / breakcount;
   for (int i = 0; i < LED_COUNT; i++) {
-    float adjusted_i = abs((break_distance_unity/2)-fmod(i_unity[i], break_distance_unity));
-    h = fmod(adjusted_i + currtime_unity, 1)*360;
+    float i_unity = float(i) / LED_COUNT;
+    float adjusted_i = abs((break_distance_unity / 2) - fmod(i_unity, break_distance_unity));
+    hue = fmod(adjusted_i + currtime_unity, 1);
     s = 1;
     v = 1;
     leds[i] = HSVtoRGB();  // Set color
@@ -420,7 +463,7 @@ void fill_rainbow_break(int breakcount) {
 
 void solidColor(int index) {
   for (int i = 0; i < LED_COUNT; i++) {
-    leds[i] = colorArray[index];  // Set color
+    leds[i] = getColorByIndex(colorArray[index]);  // Set color
   }
 }
 
@@ -480,8 +523,9 @@ void Fire2012() {
     leds[pixelnumber] = color;
   }
 }
+#include <stdint.h>
+#include <math.h>
 
-// Function to convert RGB to HSV
 void RGBtoHSV(uint32_t rgb) {
   // Extract RGB components
   uint8_t r = (rgb >> 16) & 0xFF;
@@ -494,24 +538,24 @@ void RGBtoHSV(uint32_t rgb) {
   float b_norm = b / 255.0f;
 
   // Find min and max values
-  float cmax = max(max(r_norm, g_norm), b_norm);
-  float cmin = min(min(r_norm, g_norm), b_norm);
+  float cmax = fmaxf(fmaxf(r_norm, g_norm), b_norm);
+  float cmin = fminf(fminf(r_norm, g_norm), b_norm);
   float delta = cmax - cmin;
 
   // Calculate Hue
   if (delta == 0) {
-    h = 0;
+    hue = 0.0f;  // No hue (grayscale)
   } else if (cmax == r_norm) {
-    h = 60 * fmod(((g_norm - b_norm) / delta), 6);
+    hue = fmodf(((g_norm - b_norm) / delta), 6.0f);
   } else if (cmax == g_norm) {
-    h = 60 * (((b_norm - r_norm) / delta) + 2);
-  } else if (cmax == b_norm) {
-    h = 60 * (((r_norm - g_norm) / delta) + 4);
+    hue = ((b_norm - r_norm) / delta) + 2.0f;
+  } else {  // cmax == b_norm
+    hue = ((r_norm - g_norm) / delta) + 4.0f;
   }
 
-  if (h < 0) {
-    h += 360;
-  }
+  // Convert hue to range [0, 1]
+  if (hue < 0) hue += 6.0f;  // Ensure positive hue
+  hue /= 6.0f;
 
   // Calculate Saturation
   s = (cmax == 0) ? 0 : (delta / cmax);
@@ -520,48 +564,54 @@ void RGBtoHSV(uint32_t rgb) {
   v = cmax;
 }
 
-// Function to convert HSV to RGB
 uint32_t HSVtoRGB() {
-  float c = v * s;  // Chroma
-  float x = c * (1 - abs(fmod(h / 60.0, 2) - 1));
+  // Convert normalized hue [0,1] to [0,6)
+  float h = fmodf(hue * 6.0f, 6.0f);  // Ensures `h` remains in range [0,6)
+  float c = v * s;                    // Chroma
+  float x = c * (1.0f - fabsf(fmodf(h, 2.0f) - 1.0f));
   float m = v - c;
 
   float r_norm, g_norm, b_norm;
 
-  if (h >= 0 && h < 60) {
-    r_norm = c;
-    g_norm = x;
-    b_norm = 0;
-  } else if (h >= 60 && h < 120) {
-    r_norm = x;
-    g_norm = c;
-    b_norm = 0;
-  } else if (h >= 120 && h < 180) {
-    r_norm = 0;
-    g_norm = c;
-    b_norm = x;
-  } else if (h >= 180 && h < 240) {
-    r_norm = 0;
-    g_norm = x;
-    b_norm = c;
-  } else if (h >= 240 && h < 300) {
-    r_norm = x;
-    g_norm = 0;
-    b_norm = c;
-  } else if (h >= 300 && h < 360) {
-    r_norm = c;
-    g_norm = 0;
-    b_norm = x;
-  } else {
-    r_norm = 0;
-    g_norm = 0;
-    b_norm = 0;
+  int segment = (int)h;  // Floor of h
+  switch (segment) {
+    case 0:
+      r_norm = c;
+      g_norm = x;
+      b_norm = 0;
+      break;
+    case 1:
+      r_norm = x;
+      g_norm = c;
+      b_norm = 0;
+      break;
+    case 2:
+      r_norm = 0;
+      g_norm = c;
+      b_norm = x;
+      break;
+    case 3:
+      r_norm = 0;
+      g_norm = x;
+      b_norm = c;
+      break;
+    case 4:
+      r_norm = x;
+      g_norm = 0;
+      b_norm = c;
+      break;
+    case 5:
+    default:
+      r_norm = c;
+      g_norm = 0;
+      b_norm = x;
+      break;
   }
 
-  // Denormalize RGB values to [0, 255]
-  uint8_t r = (uint8_t)((r_norm + m) * 255);
-  uint8_t g = (uint8_t)((g_norm + m) * 255);
-  uint8_t b = (uint8_t)((b_norm + m) * 255);
+  // Convert back to [0, 255] and round
+  uint8_t r = (uint8_t)roundf((r_norm + m) * 255.0f);
+  uint8_t g = (uint8_t)roundf((g_norm + m) * 255.0f);
+  uint8_t b = (uint8_t)roundf((b_norm + m) * 255.0f);
 
   // Pack into uint32_t
   return ((uint32_t)r << 16) | ((uint32_t)g << 8) | b;
