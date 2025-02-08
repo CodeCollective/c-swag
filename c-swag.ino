@@ -283,13 +283,6 @@ void loop() {
               EEPROM.write(custom_color_addr, colorArray[PROGRAM]);                         // Save the new hue to EEPROM
               Serial.println(String("Color decreased: ") + String(colorArray[PROGRAM]));
             }
-
-            // Reset color
-            if (IrReceiver.decodedIRData.command == 0x37 || IrReceiver.decodedIRData.command == 0x2A) {
-              colorArray[PROGRAM] = PROGRAM;  // Convert back to RGB
-              EEPROM.write(custom_color_addr, colorArray[PROGRAM]);                         // Save the new hue to EEPROM
-              Serial.println(String("Color decreased: ") + String(colorArray[PROGRAM]));
-            }
           }
         }
         // If its not the Color selector mode, change other things
@@ -297,27 +290,45 @@ void loop() {
           uint8_t speedAddr = EEPROM_SPEED_BASE_ADDR + PROGRAM * 4;
           // Channel Down: Decrease speed
           if (IrReceiver.decodedIRData.command == 0x04 || IrReceiver.decodedIRData.command == 0x33 || IrReceiver.decodedIRData.command == 0xB3 || IrReceiver.decodedIRData.command == 0x13) {
-            Serial.println(String("Speed addr: ") + String(speedAddr));
             cycles_per_second = max(cycles_per_second - 0.01, 0.002);
             writeFloat(speedAddr, cycles_per_second);
-            Serial.println(String("Speed decreased: ") + String(cycles_per_second));
+            Serial.println(String("Speed d: ") + String(cycles_per_second));
           }
 
           // Channel Up: Increase speed
           if (IrReceiver.decodedIRData.command == 0x5 || IrReceiver.decodedIRData.command == 0x19 || IrReceiver.decodedIRData.command == 0x99 || IrReceiver.decodedIRData.command == 0x10 ) {
             cycles_per_second = min(cycles_per_second + 0.01, 1.5);
             writeFloat(speedAddr, cycles_per_second);
-            Serial.println(String("Speed increased: ") + String(cycles_per_second));
-          }
-
-          // FIRE!
-          if (IrReceiver.decodedIRData.command == 0x37 || IrReceiver.decodedIRData.command == 0x2A) {
-            PROGRAM = PROGRAM_COUNT-1;
-            EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
-            Serial.println(String("Program: ") + String(PROGRAM));
+            Serial.println(String("Speed i: ") + String(cycles_per_second));
           }
         }
 
+        // Reset to FIRE!
+        if (IrReceiver.decodedIRData.command == 0x37 || IrReceiver.decodedIRData.command == 0x2A) {
+          PROGRAM = PROGRAM_COUNT-1;
+          EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
+          Serial.println(String("Program: ") + String(PROGRAM));
+          currtime_unity = 0;
+
+          USER_BRIGHTNESS = 0.5;
+          FastLED.setBrightness(USER_BRIGHTNESS * USER_BRIGHTNESS * USER_BRIGHTNESS * 255);
+          writeFloat(EEPROM_GLOBAL_BRIGHTNESS_ADDR, USER_BRIGHTNESS);
+          Serial.println(String("Brightness: ") + String(USER_BRIGHTNESS));
+
+          for(int program = 0; program < PROGRAM_COUNT; program++){
+            uint8_t speedAddr = EEPROM_SPEED_BASE_ADDR + PROGRAM * 4;
+            cycles_per_second = 0.5;
+            writeFloat(speedAddr, cycles_per_second);
+            Serial.println(String("Speed reset: ") + String(cycles_per_second));
+          }
+          for(int color = 0; color < PRIMARY_COLOR_COUNT; color++){
+            colorArray[color] = color;  // Convert back to RGB
+            uint8_t custom_color_addr = EEPROM_CUSTOM_COLOR_BASE_ADDR + PROGRAM * 4;  // Calculate EEPROM address for the current program's hue
+            EEPROM.write(custom_color_addr, colorArray[color]);                         // Save the new hue to EEPROM
+            Serial.println(String("Color reset: ") + String(colorArray[color]));
+          }
+        }
+        
         // Volume Down
         if (IrReceiver.decodedIRData.command == 0x40 || IrReceiver.decodedIRData.command == 0x11 || IrReceiver.decodedIRData.command == 0x90 || IrReceiver.decodedIRData.command == 0x21) {
           USER_BRIGHTNESS = max(USER_BRIGHTNESS - 0.025, 0);
@@ -350,13 +361,22 @@ void loop() {
           }
           // Previous
           if (IrReceiver.decodedIRData.command == 0x02 || IrReceiver.decodedIRData.command == 0x1E || IrReceiver.decodedIRData.command == 0x35) {
+            
             PROGRAM = (PROGRAM + PROGRAM_COUNT - 1) % PROGRAM_COUNT;
+
+            uint8_t speedAddr = EEPROM_SPEED_BASE_ADDR + PROGRAM * 4;
+            cycles_per_second = max(min(readFloat(speedAddr), 2), 0.002);
+            currtime_unity = 0;
             EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
             Serial.println(String("Program: ") + String(PROGRAM));
           }
           // Next
           if (IrReceiver.decodedIRData.command == 0x0A || IrReceiver.decodedIRData.command == 0x2D || IrReceiver.decodedIRData.command == 0x34) {
             PROGRAM = (PROGRAM + 1) % PROGRAM_COUNT;
+
+            uint8_t speedAddr = EEPROM_SPEED_BASE_ADDR + PROGRAM * 4;
+            cycles_per_second = max(min(readFloat(speedAddr), 2), 0.002);
+            currtime_unity = 0;
             EEPROM.write(EEPROM_SELECTED_PROGRAM_ADDR, PROGRAM);
             Serial.println(String("Program: ") + String(PROGRAM));
           }
